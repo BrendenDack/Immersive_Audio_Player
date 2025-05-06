@@ -1,3 +1,4 @@
+# Imports
 import os
 import curses
 import subprocess
@@ -9,7 +10,11 @@ from gpiozero.exc import GPIOZeroError
 import threading
 from stt import start_voice_recognition, play_song
 from calibrateUserProfile import run_calibration
+from datetime import datetime
+from battery_monitor import get_battery_info
 
+# This is a module in gpiozero that lets us use "pretend" buttons so I can test without it crashing
+# It allows you to also manually set pin values for buttons to test without real hardware
 # Mock pins for testing - Remove if you have real buttons to test with
 gpio.Device.pin_factory = MockFactory()
 
@@ -25,7 +30,7 @@ try:
     VOLUME_UP =  Button(23, pull_up=True, bounce_time=0.1)
     VOLUME_DOWN =  Button(24, pull_up=True, bounce_time=0.1)
 except GPIOZeroError:
-    SELECT_BUTTON = BACK_BUTTON = UP_BUTTON = RIGHT_BUTTON = DOWN_BUTTON = LEFT_BUTTON = VOLUME_DOWN = VOLUME_UP = None
+    SELECT_BUTTON = BACK_BUTTON = UP_BUTTON = RIGHT_BUTTON = DOWN_BUTTON = LEFT_BUTTON = VOLUME_DOWN = VOLUME_UP = None # If buttons fail, set all to none and use fallback method (keyboard)
     print(f"Buttons init Failed. Could not claim Buttons.")
     time.sleep(3)
 
@@ -64,27 +69,35 @@ menus = {
     }
 }
 
+# Function for loading music files dynamically into pages
 def load_music_files(page=0):
+    # Global Variables
     global all_music_files, current_page
 
-    music_folder = "Music"
+    music_folder = "Music" # Path to music folder
     try:
-        files = os.listdir(music_folder)
-        mp3s = sorted([f for f in files if f.lower().endswith(".mp3")])
+        files = os.listdir(music_folder) # Load folder
+        mp3s = sorted([f for f in files if f.lower().endswith(".mp3")]) # Sort for only mp3s (for now)
         all_music_files = mp3s
-        current_page = page
+        current_page = page # Select starting page from parameter variable
 
+        # Determine how many songs to put per page. Adjustable from global variable "items_per_page"
         start = page * items_per_page
         end = start + items_per_page
         current_files = mp3s[start:end]
 
+        # Dynamically load songs into options so they are displayed on the screen
         options = [{"label": f, "target": None, "action": f"echo Playing {f}", "action_type": "shell"} for f in current_files]
 
+        # Determine if Previous Page button is shown
         if page > 0:
             options.append({"label": "Previous Page", "target": "prev_page"})
+        
+        # Determine if Next Page button is shown
         if end < len(mp3s):
             options.append({"label": "Next Page", "target": "next_page"})
 
+        # Back button to leave library added to end
         options.append({"label": "Back", "target": "back"})
 
         menus["submenu_a"]["options"] = options
@@ -95,7 +108,7 @@ def load_music_files(page=0):
         ]
 
 
-
+# function for starting the Speech to Text thread
 def start_voice():
     global recognition_running, recognition_thread
 
@@ -119,9 +132,10 @@ def start_voice():
     recognition_thread.daemon=True # Daemonize the thread to allow it to exit with the main program
     recognition_thread.start() # Start the recognition process
 
-def clear_console():
+def clear_console(): # For manually clearing the console
     os.system('cls' if os.name == 'nt' else 'clear')
 
+# This function dictionary is for storing functions as actions. In the form { "Action_Name" : function_name }
 function_dictionary = {
     # Default setup for function dictionary. Just add your name and function to use it in the submenus
     "default_function" : clear_console, 
@@ -129,47 +143,54 @@ function_dictionary = {
     "play_song" : play_song
 }
 
-# State
+# Global Variables
 menu_stack = ["main"]
 current_index = 0
 up_pressed = down_pressed = select_pressed = back_pressed = False
+# For pages
 current_page = 0
 items_per_page = 5
 all_music_files = []
+# For Speech to Text
+recognition_thread = None
+recognition_running = False
 
 
 def handle_selection(stdscr, selected_option, h, w):
+    # Global variable
     global current_index
+    # Load labels, targets, and actions
+    label = selected_option["label"] # Labels are just the name of the option, it's what shows on the screen
+    target = selected_option.get("target") # Targets decide where the selection goes next, can be None
+    action = selected_option.get("action") # Action is what action will be performed when selected
+    action_type = selected_option.get("action_type", "shell") # Action_type lets us use different types of actions like python functions and shell commands
 
-    label = selected_option["label"]
-    target = selected_option.get("target")
-    action = selected_option.get("action")
-    action_type = selected_option.get("action_type", "shell")
-
+    # If back is sent, and we're not on main menu, go back a page
     if target == "back":
         if len(menu_stack) > 1:
             menu_stack.pop()
             current_index = 0
-    elif target == "next_page":
+    # Next_page and prev_page are specifically for menus where it dynamically loads content into "pages"
+    elif target == "next_page": # Move forward a page
         load_music_files(current_page + 1)
         current_index = 0
-    elif target == "prev_page":
+    elif target == "prev_page": # Move back a page
         load_music_files(current_page - 1)
         current_index = 0
-    elif target and target in menus:
+    elif target and target in menus: # If there are no pages, check the target and go there
     # Check if we need to generate the submenu dynamically
         if selected_option.get("action_type") == "dynamic" and target == "submenu_a":
             load_music_files(page=0)
         menu_stack.append(target)
         current_index = 0
-    elif action:
-        if action_type == "shell":
+    elif action: # Load the action and run it
+        if action_type == "shell":# If the loaded action is of type shell, run the shell command using a subprocess. This is done because curses is running in our current shell, so we need a different one
             try:
                 result = subprocess.run(action, shell=True, text=True, capture_output=True)
                 output = result.stdout.strip() if result.returncode == 0 else result.stderr.strip()
             except Exception as e:
                 output = f"Shell Error: {e}"
-        elif action_type == "python":
+        elif action_type == "python": # If the action is of type python function, load it and call it
             func = function_dictionary.get(action)
             if func:
                 try:
@@ -187,8 +208,8 @@ def handle_selection(stdscr, selected_option, h, w):
             stdscr.addstr(h // 2 - len(lines) // 2 + i, w // 2 - len(line) // 2, line)
         stdscr.refresh()
         time.sleep(2)
-    else:
-        stdscr.clear()
+    else: # Target has no action attached
+        stdscr.clear() 
         message = f"You selected: {label}"
         stdscr.addstr(h // 2, w // 2 - len(message) // 2, message)
         stdscr.refresh()
@@ -197,43 +218,57 @@ def handle_selection(stdscr, selected_option, h, w):
 
 
 def draw_menu(stdscr):
+    # Global variables
     global current_index, up_pressed, down_pressed, select_pressed, back_pressed
 
-    curses.curs_set(0)
+    curses.curs_set(0) # Set curser to origin
     stdscr.nodelay(True)
-    stdscr.keypad(True)
-    curses.start_color()
-    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN)
+    stdscr.keypad(True) # Enable keyboard for debug
+    curses.start_color() # Enable colors
+    curses.init_pair(1, curses.COLOR_BLACK, curses.COLOR_CYAN) # Default colors
 
     while True:
+        # Clear screen and double check height and width. This allows for real-time resizing
         stdscr.clear()
         h, w = stdscr.getmaxyx()
+        
+        # --- Time Display ---
+        now = datetime.now()
+        time_str = now.strftime("%I:%M:%S %p")  # e.g., 04:15:22 PM
+        stdscr.addstr(0, w - len(time_str) - 1, time_str)
+        # Battery stuff but I don't have the PSU so I'll touch it later 
+        #battery = get_battery_info()
+        #stdscr.addstr(1, w - len(battery) - 1, battery[0])
 
-        current_menu_key = menu_stack[-1]
-        current_menu = menus[current_menu_key]
-        options = current_menu["options"]
-        title = current_menu["title"]
+        # Menu variables
+        current_menu_key = menu_stack[-1] # Get current menu
+        current_menu = menus[current_menu_key] # ^^^
+        options = current_menu["options"] # Get options section for the page
+        title = current_menu["title"] # Get Title for the page
 
-        stdscr.addstr(1, w // 2 - len(title) // 2, title, curses.A_BOLD)
+        stdscr.addstr(1, w // 2 - len(title) // 2, title, curses.A_BOLD) # Write title to middle of screen
 
+        # Iterate through all options and print their labels to the middle of the screen
         for idx, option in enumerate(options):
             label = option["label"]
             x = w // 2 - len(label) // 2
             y = h // 2 - len(options) // 2 + idx
-            if idx == current_index:
+            if idx == current_index: # Decides which option is selected and colors it
                 stdscr.attron(curses.color_pair(1))
-                stdscr.addstr(y, x, label)
+                stdscr.addstr(y, x, label) # Write colored option to the screen
                 stdscr.attroff(curses.color_pair(1))
             else:
-                stdscr.addstr(y, x, label)
+                stdscr.addstr(y, x, label) # write non-colored options to screen
 
-        stdscr.refresh()
+        stdscr.refresh() # Refresh to push changes to screen
 
+        # Keyboard Navigation for when there are no hardware buttons
         try:
             key = stdscr.getch()
         except Exception:
             key = -1
 
+        # Exactly the same logic as the hardware buttons, but using keyboard for testing
         if key == curses.KEY_UP:
             current_index = (current_index - 1) % len(options)
         elif key == curses.KEY_DOWN:
@@ -242,21 +277,24 @@ def draw_menu(stdscr):
             selected_option = options[current_index]
             handle_selection(stdscr, selected_option, h, w)
         elif key in [curses.KEY_BACKSPACE, 127]:
-            handle_selection(stdscr, {"label": "Back", "target": "back"}, h, w)
+            start_voice()
 
         # GPIO button input
+        # Move up through options
         if UP_BUTTON and UP_BUTTON.is_pressed and not up_pressed:
             current_index = (current_index - 1) % len(options)
             up_pressed = True
         elif UP_BUTTON and not UP_BUTTON.is_pressed:
             up_pressed = False
 
+        # move down through options
         if DOWN_BUTTON and DOWN_BUTTON.is_pressed and not down_pressed:
             current_index = (current_index + 1) % len(options)
             down_pressed = True
         elif DOWN_BUTTON and not DOWN_BUTTON.is_pressed:
             down_pressed = False
 
+        # If select button is pressed, select the current index and use handle_selection to load next screen
         if SELECT_BUTTON and SELECT_BUTTON.is_pressed and not select_pressed:
             selected_option = options[current_index]
             handle_selection(stdscr, selected_option, h, w)
@@ -264,17 +302,21 @@ def draw_menu(stdscr):
         elif SELECT_BUTTON and not SELECT_BUTTON.is_pressed:
             select_pressed = False
 
+        # If the hardware back button is pressed, start Speech to Text program
         if BACK_BUTTON.is_pressed and not back_pressed:
-            handle_selection(stdscr, "Back", h, w)
+            start_voice()
             back_pressed = True
         elif back_pressed and not BACK_BUTTON.is_pressed:
             back_pressed = False
+
         
+        
+        # Sleep so the screen doesn't freak out from too fast refreshing
         time.sleep(0.05)
 
 def main():
     try:
-        curses.wrapper(draw_menu)
+        curses.wrapper(draw_menu) # draw_menu contains the main loop for this file
     except KeyboardInterrupt:
         pass
 
