@@ -13,6 +13,7 @@ from calibrateUserProfile import run_calibration
 from datetime import datetime
 from battery_monitor import get_battery_info
 
+
 # This is a module in gpiozero that lets us use "pretend" buttons so I can test without it crashing
 # It allows you to also manually set pin values for buttons to test without real hardware
 # Mock pins for testing - Remove if you have real buttons to test with
@@ -39,27 +40,36 @@ menus = {
     "main": {
         "title": "Main Menu",
         "options": [
-            {"label": "Library", "target": "submenu_a", "action_type" : "dynamic"},
-            {"label": "Settings", "target": "submenu_b"},
-            {"label": "Player", "target": "submenu_c"},
+            {"label": "Library", "target": "submenu_Library"},
+            {"label": "Settings", "target": "submenu_Settings"},
+            {"label": "Player", "target": "submenu_Music_Player"},
         ]
     },
-    "submenu_a": {
+    "submenu_Library": {
         "title": "Library",
+        "options": [
+            {"label": "Song List", "target": "submenu_songs", "action_type" : "dynamic"},
+            {"label": "Apply Spatial Audio", "target": "submenu_songs_spatial", "action_type" : "dynamic"},
+            {"label": "Back", "target": "back"}
+        ]
+    },
+    "submenu_songs": {
+        "title": "Songs",
         "options": [
             {"label": "Songs", "target": None},
             {"label": "Back", "target": "back"}
         ]
     },
-    "submenu_b": {
+    "submenu_Settings": {
         "title": "Settings",
         "options": [
             {"label": "Change Time", "target": None, "action" : "date", "action_type" : "shell"},
             {"label": "Change Profile", "target": None, "action" : ""},
+            {"label": "Run Calibration", "target": None, "action" : "run_calibration", "action_type" : "python"},
             {"label": "Back", "target": "back"}
         ]
     },
-    "submenu_c": {
+    "submenu_Music_Player": {
         "title": "Music Player",
         "options": [
             {"label": "Current Track", "target": None},
@@ -77,14 +87,16 @@ def load_music_files(page=0):
     music_folder = "Music" # Path to music folder
     try:
         files = os.listdir(music_folder) # Load folder
-        mp3s = sorted([f for f in files if f.lower().endswith(".mp3")]) # Sort for only mp3s (for now)
-        all_music_files = mp3s
+        mp3s = sorted([f for f in files if f.lower().endswith(".mp3")]) # Sort for .mp3
+        flac = sorted([f for f in files if f.lower().endswith(".flac")]) # Sort for .flac
+        wav = sorted([f for f in files if f.lower().endswith(".wav")]) # Sort for .wav
+        all_music_files = sorted(mp3s + flac + wav)
         current_page = page # Select starting page from parameter variable
 
         # Determine how many songs to put per page. Adjustable from global variable "items_per_page"
         start = page * items_per_page
         end = start + items_per_page
-        current_files = mp3s[start:end]
+        current_files = all_music_files[start:end]
 
         # Dynamically load songs into options so they are displayed on the screen
         options = [{"label": f, "target": None, "action": f"echo Playing {f}", "action_type": "shell"} for f in current_files]
@@ -100,9 +112,9 @@ def load_music_files(page=0):
         # Back button to leave library added to end
         options.append({"label": "Back", "target": "back"})
 
-        menus["submenu_a"]["options"] = options
+        menus["submenu_songs"]["options"] = options
     except Exception as e:
-        menus["submenu_a"]["options"] = [
+        menus["submenu_songs"]["options"] = [
             {"label": f"Error loading files: {e}", "target": "back"},
             {"label": "Back", "target": "back"}
         ]
@@ -140,7 +152,8 @@ function_dictionary = {
     # Default setup for function dictionary. Just add your name and function to use it in the submenus
     "default_function" : clear_console, 
     "start_voice" : start_voice,
-    "play_song" : play_song
+    "play_song" : play_song,
+    "run_calibration" : run_calibration
 }
 
 # Global Variables
@@ -179,7 +192,7 @@ def handle_selection(stdscr, selected_option, h, w):
         current_index = 0
     elif target and target in menus: # If there are no pages, check the target and go there
     # Check if we need to generate the submenu dynamically
-        if selected_option.get("action_type") == "dynamic" and target == "submenu_a":
+        if selected_option.get("action_type") == "dynamic" and target == "submenu_songs":
             load_music_files(page=0)
         menu_stack.append(target)
         current_index = 0
@@ -194,9 +207,17 @@ def handle_selection(stdscr, selected_option, h, w):
             func = function_dictionary.get(action)
             if func:
                 try:
+                    curses.endwin()
                     output = func()
                 except Exception as e:
                     output = f"Python Error: {e}"
+                finally:
+                    stdscr = curses.initscr()
+                    curses.noecho()
+                    curses.cbreak()
+                    stdscr.keypad(True)
+                    stdscr.clear()
+                    curses.doupdate()
             else:
                 output = f"Function '{action}' not found"
         else:
@@ -205,13 +226,23 @@ def handle_selection(stdscr, selected_option, h, w):
         stdscr.clear()
         lines = str(output).split("\n")
         for i, line in enumerate(lines):
-            stdscr.addstr(h // 2 - len(lines) // 2 + i, w // 2 - len(line) // 2, line)
+            y = max(0, min(h - 1, h // 2 - len(lines) // 2 + i))
+            x = max(0, min(w - 1, w // 2 - len(line) // 2))
+            try:
+                stdscr.addstr(y, x, line[:w - x])
+            except curses.error:
+                pass
         stdscr.refresh()
         time.sleep(2)
     else: # Target has no action attached
         stdscr.clear() 
         message = f"You selected: {label}"
-        stdscr.addstr(h // 2, w // 2 - len(message) // 2, message)
+        y = max(0, min(h - 1, h // 2))
+        x = max(0, min(w - 1, w // 2 - len(message) // 2))
+        try:
+            stdscr.addstr(y, x, message[:w - x])
+        except curses.error:
+            pass
         stdscr.refresh()
         time.sleep(1)
 
