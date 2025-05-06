@@ -10,6 +10,7 @@ from gpiozero.exc import GPIOZeroError
 import threading
 from stt import start_voice_recognition, play_song
 from calibrateUserProfile import run_calibration
+from utility import run_spatial_audio
 from datetime import datetime
 from battery_monitor import get_battery_info
 
@@ -35,6 +36,19 @@ except GPIOZeroError:
     print(f"Buttons init Failed. Could not claim Buttons.")
     time.sleep(3)
 
+# Global Variables
+menu_stack = ["main"]
+current_index = 0
+up_pressed = down_pressed = select_pressed = back_pressed = False
+selected_song = None
+# For pages
+current_page = 0
+items_per_page = 5
+all_music_files = []
+# For Speech to Text
+recognition_thread = None
+recognition_running = False
+
 # Menu definitions with labels, targets, and actions
 menus = {
     "main": {
@@ -49,7 +63,7 @@ menus = {
         "title": "Library",
         "options": [
             {"label": "Song List", "target": "submenu_songs", "action_type" : "dynamic"},
-            {"label": "Apply Spatial Audio", "target": "submenu_songs_spatial", "action_type" : "dynamic"},
+            # {"label": "Apply Spatial Audio", "target": "submenu_songs_spatial", "action_type" : "dynamic"},
             {"label": "Back", "target": "back"}
         ]
     },
@@ -59,6 +73,14 @@ menus = {
             {"label": "Songs", "target": None},
             {"label": "Back", "target": "back"}
         ]
+    },
+    "submenu_song_options": {
+    "title": "Song Options",
+    "options": [  # These will be updated dynamically when entering the menu
+        {"label": "Play Song", "target": None, "action_type": "python", "action": "play_song"},
+        {"label": "Apply Spatial Audio", "target": None, "action": "apply_spatial_audio", "action_type": "python"},
+        {"label": "Back", "target": "back"}
+    ]
     },
     "submenu_Settings": {
         "title": "Settings",
@@ -78,6 +100,12 @@ menus = {
         ]
     }
 }
+
+def play_selected_song():
+    if selected_song:
+        subprocess.run(f'ffplay -nodisp -autoexit "Music/{selected_song}"', shell=True)
+    else:
+        print("No song selected")
 
 # Function for loading music files dynamically into pages
 def load_music_files(page=0):
@@ -147,29 +175,20 @@ def start_voice():
 def clear_console(): # For manually clearing the console
     os.system('cls' if os.name == 'nt' else 'clear')
 
+def run_spatial_audio_helper():
+    run_spatial_audio(f"Music/{selected_song}")
+
 # This function dictionary is for storing functions as actions. In the form { "Action_Name" : function_name }
 function_dictionary = {
     # Default setup for function dictionary. Just add your name and function to use it in the submenus
     "default_function" : clear_console, 
     "start_voice" : start_voice,
-    "play_song" : play_song,
-    "run_calibration" : run_calibration
+    "play_song" : play_selected_song,
+    "run_calibration" : run_calibration,
+    "apply_spatial_audio" : run_spatial_audio_helper
 }
 
-# Global Variables
-menu_stack = ["main"]
-current_index = 0
-up_pressed = down_pressed = select_pressed = back_pressed = False
-# For pages
-current_page = 0
-items_per_page = 5
-all_music_files = []
-# For Speech to Text
-recognition_thread = None
-recognition_running = False
-
-
-def handle_selection(stdscr, selected_option, h, w):
+def handle_selection(stdscr, selected_option, h, w, current_menu_key):
     # Global variable
     global current_index
     # Load labels, targets, and actions
@@ -195,6 +214,12 @@ def handle_selection(stdscr, selected_option, h, w):
         if selected_option.get("action_type") == "dynamic" and target == "submenu_songs":
             load_music_files(page=0)
         menu_stack.append(target)
+        current_index = 0
+    elif current_menu_key == "submenu_songs" and label.lower() not in ["next page", "previous page", "back"]:
+        # User selected a song
+        global selected_song
+        selected_song = label  # Save it for later
+        menu_stack.append("submenu_song_options")
         current_index = 0
     elif action: # Load the action and run it
         if action_type == "shell":# If the loaded action is of type shell, run the shell command using a subprocess. This is done because curses is running in our current shell, so we need a different one
@@ -224,6 +249,8 @@ def handle_selection(stdscr, selected_option, h, w):
             output = f"Unknown action type: {action_type}"
 
         stdscr.clear()
+        if output == None:
+            output = "Finished Task"
         lines = str(output).split("\n")
         for i, line in enumerate(lines):
             y = max(0, min(h - 1, h // 2 - len(lines) // 2 + i))
@@ -306,7 +333,7 @@ def draw_menu(stdscr):
             current_index = (current_index + 1) % len(options)
         elif key in [curses.KEY_ENTER, ord('\n'), ord('\r')]:
             selected_option = options[current_index]
-            handle_selection(stdscr, selected_option, h, w)
+            handle_selection(stdscr, selected_option, h, w, current_menu_key)
         elif key in [curses.KEY_BACKSPACE, 127]:
             start_voice()
 
@@ -328,7 +355,7 @@ def draw_menu(stdscr):
         # If select button is pressed, select the current index and use handle_selection to load next screen
         if SELECT_BUTTON and SELECT_BUTTON.is_pressed and not select_pressed:
             selected_option = options[current_index]
-            handle_selection(stdscr, selected_option, h, w)
+            handle_selection(stdscr, selected_option, h, w, current_menu_key)
             select_pressed = True
         elif SELECT_BUTTON and not SELECT_BUTTON.is_pressed:
             select_pressed = False
